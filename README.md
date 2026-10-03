@@ -27,7 +27,7 @@ python3 gcoy_logward.py analyze \
 python3 gcoy_logward.py analyze \
   --auth /var/log/auth.log \
   --access /var/log/nginx/access.log \
-  --whitelist 203.0.113.9,192.0.2.10 \
+  --whitelist 203.0.113.9,10.0.0.0/8 \
   --html report.html --ioc ioc.json
 ```
 
@@ -52,6 +52,7 @@ python3 gcoy_logward.py analyze \
 - `--html report.html`：单文件战报，可挂 GitHub Pages
 - `--ioc ioc.json`：恶意 IP + 标签（bruteforce / compromise / scanner / webshell-access ...）+ 证据计数，可直接喂防火墙或情报平台
 - `--csv ioc.csv`：表格版 IOC
+- `--json report.json`：全量报告（meta/findings/score/band/ioc），支持 CIDR 白名单，便于 CI 与下游消费
 
 ## 设计原则
 
