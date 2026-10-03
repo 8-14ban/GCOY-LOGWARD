@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import ipaddress
 import json
 import os
 import re
@@ -21,6 +22,29 @@ RE_ACCESS = re.compile(
     r'^(\d+\.\d+\.\d+\.\d+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d{3}) (\S+) "([^"]*)" "([^"]*)"'
 )
 RE_ACC_T = re.compile(r"%d/%b/%Y:%H:%M:%S")
+
+
+def parse_wl(s):
+    nets = []
+    for x in (s or "").split(","):
+        x = x.strip()
+        if not x:
+            continue
+        cidr = x if "/" in x else x + "/32"
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            sys.exit(f"白名单条目非法：{x}")
+    return nets
+
+
+def in_wl(ip, nets):
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(a in n for n in nets)
+
 
 SCANNER_UA = [
     "sqlmap", "nikto", "nmap", "masscan", "gobuster", "dirsearch", "hydra",
@@ -55,7 +79,7 @@ def parse_auth(lines, wl):
         m = RE_SSH_FAIL.search(line)
         if m:
             user, ip = m.group(1), m.group(2)
-            if ip in wl:
+            if in_wl(ip, wl):
                 continue
             fails[ip]["n"] += 1
             fails[ip]["users"].add(user)
@@ -66,7 +90,7 @@ def parse_auth(lines, wl):
         m = RE_SSH_OK.search(line)
         if m:
             user, ip = m.group(1), m.group(2)
-            if ip in wl:
+            if in_wl(ip, wl):
                 continue
             oks[ip] += 1
             ok_events.append((user, ip, hour, line))
@@ -107,7 +131,7 @@ def parse_access(lines, wl):
             continue
         total += 1
         ip, t, method, path, status, size, ref, ua = m.groups()
-        if ip in wl:
+        if in_wl(ip, wl):
             continue
         d = by_ip[ip]
         d["n"] += 1
@@ -307,7 +331,7 @@ def render_html(meta, findings, score, ioc, ioc_path=None):
 
 
 def run(analyze_args):
-    wl = set(x.strip() for x in (analyze_args.whitelist or "").split(",") if x.strip())
+    wl = parse_wl(analyze_args.whitelist)
     auth_lines = Path(analyze_args.auth).read_text(encoding="utf-8", errors="replace").splitlines() if analyze_args.auth else []
     acc_lines = Path(analyze_args.access).read_text(encoding="utf-8", errors="replace").splitlines() if analyze_args.access else []
     if not auth_lines and not acc_lines:
@@ -331,6 +355,13 @@ def run(analyze_args):
                 for ip, v in ioc.items():
                     w.writerow([ip, ";".join(v["tags"]), v["evidence"]])
             print(f"[+] IOC CSV -> {Path(analyze_args.csv).resolve()}")
+    if analyze_args.json:
+        Path(analyze_args.json).write_text(
+            json.dumps({"meta": meta, "score": score, "band": band(score),
+                        "findings": findings, "iocs": ioc}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[+] 全量 JSON 报告 -> {Path(analyze_args.json).resolve()}")
     if analyze_args.html:
         Path(analyze_args.html).write_text(
             render_html(meta, findings, score, ioc, analyze_args.ioc), encoding="utf-8"
@@ -398,6 +429,7 @@ def main(argv=None):
     s.add_argument("--html", default=None, help="导出 HTML 报告路径")
     s.add_argument("--ioc", default=None, help="导出 IOC JSON 路径")
     s.add_argument("--csv", default=None, help="导出 IOC CSV 路径（需 --ioc）")
+    s.add_argument("--json", default=None, help="导出全量报告 JSON（meta/findings/score/band/ioc）")
     s.set_defaults(fn=run)
     s = sub.add_parser("demo", help="生成演示日志")
     s.add_argument("--outdir", default=".")
@@ -408,7 +440,7 @@ def main(argv=None):
     def _selftest(a):
         tmp = tempfile.mkdtemp(prefix="gcoy-logward-")
         fa, fc = gen_demo(tmp)
-        ns = argparse.Namespace(auth=str(fa), access=str(fc), whitelist="", html=os.path.join(tmp, "r.html"), ioc=os.path.join(tmp, "i.json"), csv=os.path.join(tmp, "i.csv"))
+        ns = argparse.Namespace(auth=str(fa), access=str(fc), whitelist="", html=os.path.join(tmp, "r.html"), ioc=os.path.join(tmp, "i.json"), csv=os.path.join(tmp, "i.csv"), json=os.path.join(tmp, "full.json"))
         score, ioc, findings = run(ns)
         assert score < 100, "演示日志应产生扣分"
         assert "198.51.100.7" in ioc, "演示日志应识别恶意 IP"
@@ -418,6 +450,8 @@ def main(argv=None):
         assert "198.51.100.7" in html
         js = json.loads(Path(tmp, "i.json").read_text(encoding="utf-8"))
         assert js["iocs"]["198.51.100.7"]["tags"]
+        full = json.loads(Path(tmp, "full.json").read_text(encoding="utf-8"))
+        assert full["band"] and full["findings"]
         print("[selftest] OK ->", tmp)
     s = sub.add_parser("selftest", help="自检")
     s.set_defaults(fn=_selftest)
